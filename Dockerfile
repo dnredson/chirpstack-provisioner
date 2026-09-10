@@ -1,5 +1,10 @@
 FROM rust:1.88-bookworm AS builder
 WORKDIR /src
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY Cargo.toml ./
 COPY build.rs ./build.rs
 COPY proto ./proto
