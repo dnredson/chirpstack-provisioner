@@ -73,12 +73,49 @@ cargo test
 cargo run -- --help
 ```
 
-The client targets the official ChirpStack v4 HTTP API. The API contracts are
+The client targets the official ChirpStack v4.19.1 gRPC API. The API contracts are
 defined in the upstream [application](https://github.com/chirpstack/chirpstack/blob/master/api/proto/api/application.proto),
 [device profile](https://github.com/chirpstack/chirpstack/blob/master/api/proto/api/device_profile.proto),
 [gateway](https://github.com/chirpstack/chirpstack/blob/master/api/proto/api/gateway.proto), and
 [device](https://github.com/chirpstack/chirpstack/blob/master/api/proto/api/device.proto)
 protobuf definitions.
+
+### gRPC reconciliation guarantees
+
+- Tenant, application and device-profile discovery follows every page, including
+  resources after the first 100 results. Profiles are scoped to their tenant.
+- Gateway, device and OTAA key operations use the official protobuf requests.
+- Only gRPC `NotFound` permits creation after a failed lookup. Authentication,
+  permission, timeout and transport errors abort reconciliation.
+- `chirpstack.timeout_seconds` bounds connection setup and each RPC, including
+  bootstrap login and API-key creation.
+- Device tags and the exact `region_config_id` are passed to ChirpStack.
+
+Standard region IDs such as `eu868`, `us915_0`, `au915_7` and `as923_2`
+determine the radio region. For a custom region configuration ID, declare the
+radio region explicitly:
+
+```yaml
+device_profiles:
+  - key: sensor-profile
+    name: Sensor profile
+    region_config_id: farm_au915
+    region: AU915
+    supports_otaa: true
+```
+
+Unknown radio regions are rejected before any provisioning call; they never
+silently fall back to EU868.
+
+Tests include a local HTTP/2 gRPC test double that decodes the real protobuf
+messages. They cover creation, repeat reconciliation, rediscovery without local
+IDs, pagination, tags, regions, gateway and key updates, failures and deadlines.
+They do not establish that an uplink reached MQTT or that the LAN deployment
+is ready. That still requires the governed live canary.
+
+`protoc` is a **build-time** dependency of `chirpstack_api`. The Docker builder
+and CI install `protobuf-compiler`; the runtime container and fog host do not
+need it when deploying the published image.
 
 
 ## Automatic first contact
