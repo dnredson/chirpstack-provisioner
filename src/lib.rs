@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -15,11 +15,9 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use reqwest::{Client, Method};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
-use tracing::info;
 
 pub mod internal_bootstrap {
     tonic::include_proto!("api");
@@ -446,6 +444,55 @@ fn find_result_id(value: &Value, name: &str) -> Option<String> {
     value.get("result")?.as_array()?.iter().find(|item| item.get("name").and_then(Value::as_str) == Some(name)).and_then(|item| item.get("id").and_then(Value::as_str)).map(str::to_owned)
 }
 
+async fn resolve_api_token(config: &Config) -> Result<String> {
+    if let Some(env_name) = &config.chirpstack.api_token_env {
+        if let Ok(token) = std::env::var(env_name) {
+            if !token.trim().is_empty() {
+                return Ok(token);
+            }
+        }
+    }
+
+    let token_path = &config.chirpstack.bootstrap.token_path;
+    if token_path.exists() {
+        let token = std::fs::read_to_string(token_path)
+            .with_context(|| format!("read persisted ChirpStack API token: {}", token_path.display()))?;
+        if !token.trim().is_empty() {
+            return Ok(token.trim().to_string());
+        }
+    }
+
+    let email = std::env::var(&config.chirpstack.bootstrap.email_env)
+        .unwrap_or_else(|_| config.chirpstack.bootstrap.default_email.clone());
+    let password = std::env::var(&config.chirpstack.bootstrap.password_env)
+        .unwrap_or_else(|_| config.chirpstack.bootstrap.default_password.clone());
+
+    let token = ChirpStackClient::bootstrap_api_token(
+        &config.chirpstack.endpoint,
+        &email,
+        &password,
+        &config.chirpstack.bootstrap.api_key_name,
+    )
+    .await
+    .context("automatic ChirpStack bootstrap authentication")?;
+
+    atomic_write_secret(token_path, &token)?;
+    Ok(token)
+}
+
+fn string_map(value: &Value, field: &str) -> HashMap<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub struct ChirpStackClient {
     endpoint: String,
     token: String,
@@ -586,6 +633,9 @@ impl ChirpStackClient {
                         offset: 0,
                         search: String::new(),
                         tenant_id: tenant_id.into(),
+                        device_id: String::new(),
+                        global_only: false,
+                        tenant_only: false,
                     })?)
                     .await?
                     .into_inner();
@@ -736,8 +786,8 @@ impl ChirpStackClient {
                         join_eui: device["join_eui"].as_str().unwrap_or_default().into(),
                         skip_fcnt_check: false,
                         is_disabled: false,
-                        tags: BTreeMap::new(),
-                        variables: BTreeMap::new(),
+                        tags: string_map(device, "tags"),
+                        variables: HashMap::new(),
                     }),
                 })?)
                 .await?;
