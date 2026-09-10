@@ -3,7 +3,13 @@ server:
 
 chirpstack:
   endpoint: http://chirpstack:8080
-  api_token_env: CHIRPSTACK_API_TOKEN
+  bootstrap:
+    email_env: CHIRPSTACK_BOOTSTRAP_EMAIL
+    password_env: CHIRPSTACK_BOOTSTRAP_PASSWORD
+    default_email: admin
+    default_password: admin
+    api_key_name: datum-chirpstack-provisioner
+    token_path: /var/lib/chirpstack-provisioner/api-token
   timeout_seconds: 15
 
 # This file must live on a writable persistent volume when the dynamic API is used.
