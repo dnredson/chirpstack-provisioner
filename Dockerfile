@@ -1,6 +1,8 @@
 FROM rust:1.86-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml ./
+COPY build.rs ./build.rs
+COPY proto ./proto
 COPY src ./src
 RUN cargo build --release
 
