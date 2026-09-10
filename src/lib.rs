@@ -1,5 +1,7 @@
 use std::{
     collections::BTreeMap,
+    fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -18,6 +20,10 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tracing::info;
+
+pub mod internal_bootstrap {
+    tonic::include_proto!("api");
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -53,13 +59,49 @@ fn default_bind() -> String { "0.0.0.0:8085".into() }
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChirpStackConfig {
     pub endpoint: String,
-    #[serde(default = "default_token_env")]
-    pub api_token_env: String,
+    #[serde(default)]
+    pub api_token_env: Option<String>,
+    #[serde(default)]
+    pub bootstrap: BootstrapAuthConfig,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
 }
 
-fn default_token_env() -> String { "CHIRPSTACK_API_TOKEN".into() }
+#[derive(Debug, Clone, Deserialize)]
+pub struct BootstrapAuthConfig {
+    #[serde(default = "default_bootstrap_email_env")]
+    pub email_env: String,
+    #[serde(default = "default_bootstrap_password_env")]
+    pub password_env: String,
+    #[serde(default = "default_bootstrap_email")]
+    pub default_email: String,
+    #[serde(default = "default_bootstrap_password")]
+    pub default_password: String,
+    #[serde(default = "default_api_key_name")]
+    pub api_key_name: String,
+    #[serde(default = "default_token_path")]
+    pub token_path: PathBuf,
+}
+
+impl Default for BootstrapAuthConfig {
+    fn default() -> Self {
+        Self {
+            email_env: default_bootstrap_email_env(),
+            password_env: default_bootstrap_password_env(),
+            default_email: default_bootstrap_email(),
+            default_password: default_bootstrap_password(),
+            api_key_name: default_api_key_name(),
+            token_path: default_token_path(),
+        }
+    }
+}
+
+fn default_bootstrap_email_env() -> String { "CHIRPSTACK_BOOTSTRAP_EMAIL".into() }
+fn default_bootstrap_password_env() -> String { "CHIRPSTACK_BOOTSTRAP_PASSWORD".into() }
+fn default_bootstrap_email() -> String { "admin".into() }
+fn default_bootstrap_password() -> String { "admin".into() }
+fn default_api_key_name() -> String { "datum-chirpstack-provisioner".into() }
+fn default_token_path() -> PathBuf { "/var/lib/chirpstack-provisioner/api-token".into() }
 fn default_timeout() -> u64 { 15 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -202,7 +244,8 @@ impl AppState {
         } else {
             ProvisionState::default()
         };
-        let client = ChirpStackClient::new(&config.chirpstack)?;
+        let token = resolve_api_token(&config).await?;
+        let client = ChirpStackClient::new(&config.chirpstack, token)?;
         Ok(Self {
             config: Arc::new(config),
             plan: Arc::new(Mutex::new(plan)),
@@ -405,11 +448,96 @@ fn find_result_id(value: &Value, name: &str) -> Option<String> {
 
 pub struct ChirpStackClient { http: Client, base: String, token: String }
 
+async fn resolve_api_token(config: &Config) -> Result<String> {
+    if let Some(env_name) = &config.chirpstack.api_token_env {
+        if let Ok(token) = std::env::var(env_name) {
+            if !token.trim().is_empty() {
+                return Ok(token);
+            }
+        }
+    }
+
+    let token_path = &config.chirpstack.bootstrap.token_path;
+    if token_path.exists() {
+        let token = std::fs::read_to_string(token_path)
+            .with_context(|| format!("read persisted ChirpStack API token: {}", token_path.display()))?;
+        if !token.trim().is_empty() {
+            return Ok(token.trim().to_string());
+        }
+    }
+
+    let email = std::env::var(&config.chirpstack.bootstrap.email_env)
+        .unwrap_or_else(|_| config.chirpstack.bootstrap.default_email.clone());
+    let password = std::env::var(&config.chirpstack.bootstrap.password_env)
+        .unwrap_or_else(|_| config.chirpstack.bootstrap.default_password.clone());
+
+    let token = ChirpStackClient::bootstrap_api_token(
+        &config.chirpstack.endpoint,
+        &email,
+        &password,
+        &config.chirpstack.bootstrap.api_key_name,
+    )
+    .await
+    .context("automatic ChirpStack bootstrap authentication")?;
+
+    atomic_write_secret(token_path, &token)?;
+    Ok(token)
+}
+
 impl ChirpStackClient {
-    fn new(config: &ChirpStackConfig) -> Result<Self> {
-        let token = std::env::var(&config.api_token_env).with_context(|| format!("missing {}", config.api_token_env))?;
+    fn new(config: &ChirpStackConfig, token: String) -> Result<Self> {
         let http = Client::builder().timeout(std::time::Duration::from_secs(config.timeout_seconds)).build()?;
         Ok(Self { http, base: config.endpoint.trim_end_matches('/').into(), token })
+    }
+
+    async fn bootstrap_api_token(
+        endpoint: &str,
+        email: &str,
+        password: &str,
+        api_key_name: &str,
+    ) -> Result<String> {
+        let channel = tonic::transport::Endpoint::from_shared(endpoint.to_string())?
+            .connect()
+            .await
+            .context("connect to ChirpStack internal gRPC API")?;
+        let mut client =
+            internal_bootstrap::internal_service_client::InternalServiceClient::new(channel);
+
+        let login = client
+            .login(tonic::Request::new(internal_bootstrap::LoginRequest {
+                email: email.to_string(),
+                password: password.to_string(),
+            }))
+            .await
+            .context("ChirpStack bootstrap login")?
+            .into_inner()
+            .jwt;
+
+        let mut request = tonic::Request::new(internal_bootstrap::CreateApiKeyRequest {
+            api_key: Some(internal_bootstrap::ApiKey {
+                name: api_key_name.to_string(),
+                is_admin: true,
+                tenant_id: String::new(),
+                is_read_only: false,
+                id: String::new(),
+            }),
+        });
+        request.metadata_mut().insert(
+            "authorization",
+            format!("Bearer {login}").parse().context("encode ChirpStack authorization metadata")?,
+        );
+
+        let token = client
+            .create_api_key(request)
+            .await
+            .context("create ChirpStack provisioner API key")?
+            .into_inner()
+            .token;
+
+        if token.trim().is_empty() {
+            return Err(anyhow!("ChirpStack returned an empty API token"));
+        }
+        Ok(token)
     }
     async fn health(&self) -> Result<()> { self.get("/").await.map(|_| ()) }
     async fn get(&self, path: &str) -> Result<Value> { self.request(Method::GET, path, None).await }
@@ -447,6 +575,24 @@ fn atomic_write_yaml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let temp = path.with_extension("yaml.tmp");
     std::fs::write(&temp, serde_yaml::to_string(value)?)?;
     std::fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn atomic_write_secret(path: &Path, value: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("secret.tmp");
+    let mut file = fs::File::create(&temp)?;
+    file.write_all(value.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))?;
+    }
+    fs::rename(temp, path)?;
     Ok(())
 }
 
