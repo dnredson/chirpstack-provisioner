@@ -446,48 +446,32 @@ fn find_result_id(value: &Value, name: &str) -> Option<String> {
     value.get("result")?.as_array()?.iter().find(|item| item.get("name").and_then(Value::as_str) == Some(name)).and_then(|item| item.get("id").and_then(Value::as_str)).map(str::to_owned)
 }
 
-pub struct ChirpStackClient { http: Client, base: String, token: String }
-
-async fn resolve_api_token(config: &Config) -> Result<String> {
-    if let Some(env_name) = &config.chirpstack.api_token_env {
-        if let Ok(token) = std::env::var(env_name) {
-            if !token.trim().is_empty() {
-                return Ok(token);
-            }
-        }
-    }
-
-    let token_path = &config.chirpstack.bootstrap.token_path;
-    if token_path.exists() {
-        let token = std::fs::read_to_string(token_path)
-            .with_context(|| format!("read persisted ChirpStack API token: {}", token_path.display()))?;
-        if !token.trim().is_empty() {
-            return Ok(token.trim().to_string());
-        }
-    }
-
-    let email = std::env::var(&config.chirpstack.bootstrap.email_env)
-        .unwrap_or_else(|_| config.chirpstack.bootstrap.default_email.clone());
-    let password = std::env::var(&config.chirpstack.bootstrap.password_env)
-        .unwrap_or_else(|_| config.chirpstack.bootstrap.default_password.clone());
-
-    let token = ChirpStackClient::bootstrap_api_token(
-        &config.chirpstack.endpoint,
-        &email,
-        &password,
-        &config.chirpstack.bootstrap.api_key_name,
-    )
-    .await
-    .context("automatic ChirpStack bootstrap authentication")?;
-
-    atomic_write_secret(token_path, &token)?;
-    Ok(token)
+pub struct ChirpStackClient {
+    endpoint: String,
+    token: String,
 }
 
 impl ChirpStackClient {
     fn new(config: &ChirpStackConfig, token: String) -> Result<Self> {
-        let http = Client::builder().timeout(std::time::Duration::from_secs(config.timeout_seconds)).build()?;
-        Ok(Self { http, base: config.endpoint.trim_end_matches('/').into(), token })
+        Ok(Self {
+            endpoint: config.endpoint.trim_end_matches('/').into(),
+            token,
+        })
+    }
+
+    fn auth<T>(&self, value: T) -> Result<tonic::Request<T>> {
+        let mut request = tonic::Request::new(value);
+        let metadata = tonic::metadata::MetadataValue::try_from(format!("Bearer {}", self.token))
+            .context("encode ChirpStack authorization metadata")?;
+        request.metadata_mut().insert("authorization", metadata);
+        Ok(request)
+    }
+
+    async fn channel(&self) -> Result<tonic::transport::Channel> {
+        tonic::transport::Endpoint::from_shared(self.endpoint.clone())?
+            .connect()
+            .await
+            .context("connect to ChirpStack gRPC API")
     }
 
     async fn bootstrap_api_token(
@@ -524,7 +508,9 @@ impl ChirpStackClient {
         });
         request.metadata_mut().insert(
             "authorization",
-            format!("Bearer {login}").parse().context("encode ChirpStack authorization metadata")?,
+            format!("Bearer {login}")
+                .parse()
+                .context("encode ChirpStack authorization metadata")?,
         );
 
         let token = client
@@ -539,24 +525,263 @@ impl ChirpStackClient {
         }
         Ok(token)
     }
-    async fn health(&self) -> Result<()> { self.get("/").await.map(|_| ()) }
-    async fn get(&self, path: &str) -> Result<Value> { self.request(Method::GET, path, None).await }
-    async fn post(&self, path: &str, body: Value) -> Result<Value> { self.request(Method::POST, path, Some(body)).await }
-    async fn put(&self, path: &str, body: Value) -> Result<Value> { self.request(Method::PUT, path, Some(body)).await }
-    async fn request(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
-        let mut request = self
-            .http
-            .request(method, format!("{}{}", self.base, path))
-            .bearer_auth(&self.token);
-        if let Some(body) = body {
-            request = request.json(&body);
+
+    async fn health(&self) -> Result<()> {
+        let mut client =
+            chirpstack_api::api::internal_service_client::InternalServiceClient::new(
+                self.channel().await?,
+            );
+        client
+            .get_version(self.auth(chirpstack_api::api::GetVersionRequest {})?)
+            .await
+            .map(|_| ())
+            .context("ChirpStack gRPC health check")
+    }
+
+    async fn get(&self, path: &str) -> Result<Value> {
+        use chirpstack_api::api::{
+            application_service_client::ApplicationServiceClient,
+            device_profile_service_client::DeviceProfileServiceClient,
+            device_service_client::DeviceServiceClient,
+            tenant_service_client::TenantServiceClient,
+        };
+
+        if path == "/" {
+            return Ok(json!({"status": "ok"}));
         }
-        let response = request.send().await?;
-        let status = response.status();
-        let text = response.text().await?;
-        if !status.is_success() { return Err(anyhow!("ChirpStack API {} {}: {}", status, path, text)); }
-        if text.trim().is_empty() { return Ok(json!({})); }
-        serde_json::from_str(&text).with_context(|| format!("invalid ChirpStack JSON from {path}"))
+
+        if path.starts_with("/api/tenants") {
+            let mut client = TenantServiceClient::new(self.channel().await?);
+            let request_path = path.trim_start_matches("/api/tenants");
+            if request_path.is_empty() || request_path.starts_with('?') {
+                let response = client
+                    .list(self.auth(chirpstack_api::api::ListTenantsRequest {
+                        limit: 100,
+                        offset: 0,
+                        search: String::new(),
+                        user_id: String::new(),
+                    })?)
+                    .await?
+                    .into_inner();
+                return Ok(json!({"result": response.result.into_iter().map(|item| json!({
+                    "id": item.id, "name": item.name
+                })).collect::<Vec<_>>() }));
+            }
+            let id = request_path.trim_start_matches('/');
+            let response = client
+                .get(self.auth(chirpstack_api::api::GetTenantRequest { id: id.into() })?)
+                .await?
+                .into_inner();
+            let tenant = response.tenant.ok_or_else(|| anyhow!("ChirpStack returned no tenant"))?;
+            return Ok(json!({"tenant": {"id": tenant.id, "name": tenant.name}}));
+        }
+
+        if path.starts_with("/api/applications") {
+            let mut client = ApplicationServiceClient::new(self.channel().await?);
+            if path.contains('?') {
+                let tenant_id = path.split("tenant_id=").nth(1).unwrap_or_default();
+                let response = client
+                    .list(self.auth(chirpstack_api::api::ListApplicationsRequest {
+                        limit: 100,
+                        offset: 0,
+                        search: String::new(),
+                        tenant_id: tenant_id.into(),
+                    })?)
+                    .await?
+                    .into_inner();
+                return Ok(json!({"result": response.result.into_iter().map(|item| json!({
+                    "id": item.id, "name": item.name
+                })).collect::<Vec<_>>() }));
+            }
+            let id = path.rsplit('/').next().unwrap_or_default();
+            let response = client
+                .get(self.auth(chirpstack_api::api::GetApplicationRequest { id: id.into() })?)
+                .await?
+                .into_inner();
+            let application = response.application.ok_or_else(|| anyhow!("ChirpStack returned no application"))?;
+            return Ok(json!({"application": {"id": application.id, "name": application.name}}));
+        }
+
+        if path.starts_with("/api/device-profiles") {
+            let mut client = DeviceProfileServiceClient::new(self.channel().await?);
+            if path.contains('?') {
+                let tenant_id = path.split("tenant_id=").nth(1).unwrap_or_default();
+                let response = client
+                    .list(self.auth(chirpstack_api::api::ListDeviceProfilesRequest {
+                        limit: 100,
+                        offset: 0,
+                        search: String::new(),
+                        tenant_id: tenant_id.into(),
+                    })?)
+                    .await?
+                    .into_inner();
+                return Ok(json!({"result": response.result.into_iter().map(|item| json!({
+                    "id": item.id, "name": item.name
+                })).collect::<Vec<_>>() }));
+            }
+            let id = path.rsplit('/').next().unwrap_or_default();
+            let response = client
+                .get(self.auth(chirpstack_api::api::GetDeviceProfileRequest { id: id.into() })?)
+                .await?
+                .into_inner();
+            let profile = response.device_profile.ok_or_else(|| anyhow!("ChirpStack returned no device-profile"))?;
+            return Ok(json!({"device_profile": {"id": profile.id, "name": profile.name}}));
+        }
+
+        if path.starts_with("/api/devices/") {
+            let mut client = DeviceServiceClient::new(self.channel().await?);
+            let suffix = path.trim_start_matches("/api/devices/");
+            if suffix.ends_with("/keys") {
+                let dev_eui = suffix.trim_end_matches("/keys");
+                client
+                    .get_keys(self.auth(chirpstack_api::api::GetDeviceKeysRequest {
+                        dev_eui: dev_eui.into(),
+                    })?)
+                    .await?;
+                return Ok(json!({}));
+            }
+            let response = client
+                .get(self.auth(chirpstack_api::api::GetDeviceRequest {
+                    dev_eui: suffix.into(),
+                })?)
+                .await?
+                .into_inner();
+            let device = response.device.ok_or_else(|| anyhow!("ChirpStack returned no device"))?;
+            return Ok(json!({"device": {"dev_eui": device.dev_eui}}));
+        }
+
+        Err(anyhow!("unsupported ChirpStack gRPC GET path: {path}"))
+    }
+
+    async fn post(&self, path: &str, body: Value) -> Result<Value> {
+        use chirpstack_api::api::{
+            application_service_client::ApplicationServiceClient,
+            device_profile_service_client::DeviceProfileServiceClient,
+            device_service_client::DeviceServiceClient,
+            tenant_service_client::TenantServiceClient,
+        };
+
+        if path == "/api/tenants" {
+            let tenant = &body["tenant"];
+            let response = TenantServiceClient::new(self.channel().await?)
+                .create(self.auth(chirpstack_api::api::CreateTenantRequest {
+                    tenant: Some(chirpstack_api::api::Tenant {
+                        id: String::new(),
+                        name: tenant["name"].as_str().unwrap_or_default().into(),
+                        description: tenant["description"].as_str().unwrap_or_default().into(),
+                        can_have_gateways: tenant["can_have_gateways"].as_bool().unwrap_or(true),
+                        max_gateway_count: tenant["max_gateway_count"].as_u64().unwrap_or(0) as u32,
+                        max_device_count: tenant["max_device_count"].as_u64().unwrap_or(0) as u32,
+                        ..Default::default()
+                    }),
+                })?)
+                .await?
+                .into_inner();
+            return Ok(json!({"id": response.id}));
+        }
+
+        if path == "/api/applications" {
+            let application = &body["application"];
+            let response = ApplicationServiceClient::new(self.channel().await?)
+                .create(self.auth(chirpstack_api::api::CreateApplicationRequest {
+                    application: Some(chirpstack_api::api::Application {
+                        id: String::new(),
+                        name: application["name"].as_str().unwrap_or_default().into(),
+                        description: application["description"].as_str().unwrap_or_default().into(),
+                        tenant_id: application["tenant_id"].as_str().unwrap_or_default().into(),
+                        ..Default::default()
+                    }),
+                })?)
+                .await?
+                .into_inner();
+            return Ok(json!({"id": response.id}));
+        }
+
+        if path == "/api/device-profiles" {
+            let profile = &body["device_profile"];
+            let response = DeviceProfileServiceClient::new(self.channel().await?)
+                .create(self.auth(chirpstack_api::api::CreateDeviceProfileRequest {
+                    device_profile: Some(chirpstack_api::api::DeviceProfile {
+                        id: String::new(),
+                        tenant_id: profile["tenant_id"].as_str().unwrap_or_default().into(),
+                        name: profile["name"].as_str().unwrap_or_default().into(),
+                        description: profile["description"].as_str().unwrap_or_default().into(),
+                        region: chirpstack_api::common::Region::Eu868.into(),
+                        mac_version: chirpstack_api::common::MacVersion::Lorawan103.into(),
+                        reg_params_revision: chirpstack_api::common::RegParamsRevision::A.into(),
+                        adr_algorithm_id: "default".into(),
+                        supports_otaa: profile["supports_otaa"].as_bool().unwrap_or(true),
+                        supports_class_b: profile["supports_class_b"].as_bool().unwrap_or(false),
+                        supports_class_c: profile["supports_class_c"].as_bool().unwrap_or(false),
+                        uplink_interval: profile["uplink_interval"].as_u64().unwrap_or(60) as u32,
+                        device_status_req_interval: profile["device_status_req_interval"].as_u64().unwrap_or(86400) as u32,
+                        ..Default::default()
+                    }),
+                })?)
+                .await?
+                .into_inner();
+            return Ok(json!({"id": response.id}));
+        }
+
+        if path == "/api/devices" {
+            let device = &body["device"];
+            let response = DeviceServiceClient::new(self.channel().await?)
+                .create(self.auth(chirpstack_api::api::CreateDeviceRequest {
+                    device: Some(chirpstack_api::api::Device {
+                        dev_eui: device["dev_eui"].as_str().unwrap_or_default().into(),
+                        name: device["name"].as_str().unwrap_or_default().into(),
+                        description: device["description"].as_str().unwrap_or_default().into(),
+                        application_id: device["application_id"].as_str().unwrap_or_default().into(),
+                        device_profile_id: device["device_profile_id"].as_str().unwrap_or_default().into(),
+                        join_eui: device["join_eui"].as_str().unwrap_or_default().into(),
+                        skip_fcnt_check: false,
+                        is_disabled: false,
+                        tags: BTreeMap::new(),
+                        variables: BTreeMap::new(),
+                    }),
+                })?)
+                .await?;
+            return Ok(json!({}));
+        }
+
+        if path.ends_with("/keys") {
+            let keys = &body["device_keys"];
+            DeviceServiceClient::new(self.channel().await?)
+                .create_keys(self.auth(chirpstack_api::api::CreateDeviceKeysRequest {
+                    device_keys: Some(chirpstack_api::api::DeviceKeys {
+                        dev_eui: keys["dev_eui"].as_str().unwrap_or_default().into(),
+                        nwk_key: keys["nwk_key"].as_str().unwrap_or_default().into(),
+                        app_key: keys["app_key"].as_str().unwrap_or_default().into(),
+                        ..Default::default()
+                    }),
+                })?)
+                .await?;
+            return Ok(json!({}));
+        }
+
+        Err(anyhow!("unsupported ChirpStack gRPC POST path: {path}"))
+    }
+
+    async fn put(&self, path: &str, body: Value) -> Result<Value> {
+        if path.starts_with("/api/tenants/") {
+            let id = path.trim_start_matches("/api/tenants/");
+            let tenant = &body["tenant"];
+            chirpstack_api::api::tenant_service_client::TenantServiceClient::new(self.channel().await?)
+                .update(self.auth(chirpstack_api::api::UpdateTenantRequest {
+                    tenant: Some(chirpstack_api::api::Tenant {
+                        id: id.into(),
+                        name: tenant["name"].as_str().unwrap_or_default().into(),
+                        description: tenant["description"].as_str().unwrap_or_default().into(),
+                        can_have_gateways: tenant["can_have_gateways"].as_bool().unwrap_or(true),
+                        max_gateway_count: tenant["max_gateway_count"].as_u64().unwrap_or(0) as u32,
+                        max_device_count: tenant["max_device_count"].as_u64().unwrap_or(0) as u32,
+                        ..Default::default()
+                    }),
+                })?)
+                .await?;
+            return Ok(json!({}));
+        }
+        Err(anyhow!("unsupported ChirpStack gRPC PUT path: {path}"))
     }
 }
 
