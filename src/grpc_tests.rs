@@ -40,14 +40,22 @@ fn grpc<M: Message>(message: M) -> Response {
     let mut frame = vec![0];
     frame.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
     frame.extend(encoded);
-    ([("content-type", "application/grpc"), ("grpc-status", "0")], frame).into_response()
+    (
+        [("content-type", "application/grpc"), ("grpc-status", "0")],
+        frame,
+    )
+        .into_response()
 }
 
 fn grpc_error(code: u32) -> Response {
-    ([
-        ("content-type", "application/grpc".to_owned()),
-        ("grpc-status", code.to_string()),
-    ], Vec::<u8>::new()).into_response()
+    (
+        [
+            ("content-type", "application/grpc".to_owned()),
+            ("grpc-status", code.to_string()),
+        ],
+        Vec::<u8>::new(),
+    )
+        .into_response()
 }
 
 async fn mock_rpc(
@@ -59,7 +67,10 @@ async fn mock_rpc(
     match uri.path() {
         "/api.InternalService/Login" => {}
         "/api.InternalService/CreateApiKey" => {
-            assert_eq!(headers.get("authorization").unwrap(), "Bearer bootstrap-jwt");
+            assert_eq!(
+                headers.get("authorization").unwrap(),
+                "Bearer bootstrap-jwt"
+            );
         }
         _ => assert_eq!(headers.get("authorization").unwrap(), "Bearer test-token"),
     }
@@ -77,14 +88,19 @@ async fn mock_rpc(
             let request = decode::<internal_bootstrap::LoginRequest>(&body);
             assert_eq!(request.email, "test-admin");
             assert_eq!(request.password, "test-password");
-            grpc(internal_bootstrap::LoginResponse { jwt: "bootstrap-jwt".into() })
+            grpc(internal_bootstrap::LoginResponse {
+                jwt: "bootstrap-jwt".into(),
+            })
         }
         "/api.InternalService/CreateApiKey" => {
-            let key = decode::<internal_bootstrap::CreateApiKeyRequest>(&body).api_key.unwrap();
+            let key = decode::<internal_bootstrap::CreateApiKeyRequest>(&body)
+                .api_key
+                .unwrap();
             assert_eq!(key.name, "test-provisioner");
             assert!(key.is_admin);
             grpc(internal_bootstrap::CreateApiKeyResponse {
-                id: "key-1".into(), token: "test-token".into(),
+                id: "key-1".into(),
+                token: "test-token".into(),
             })
         }
 
@@ -117,23 +133,30 @@ async fn mock_rpc(
 
         "/api.TenantService/List" => {
             let request = decode::<ListTenantsRequest>(&body);
-            
+
             db.offsets.push(("Tenant".into(), request.offset));
-            let selected: Vec<_> = db.tenants.values()
-                
-                .collect();
+            let selected: Vec<_> = db.tenants.values().collect();
             let total_count = selected.len() as u32;
-            let result = selected.into_iter()
+            let result = selected
+                .into_iter()
                 .skip(request.offset as usize)
                 .take(request.limit as usize)
                 .map(|entity| TenantListItem {
-                    id: entity.id.clone(), name: entity.name.clone(), ..Default::default()
-                }).collect();
-            grpc(ListTenantsResponse { total_count, result })
+                    id: entity.id.clone(),
+                    name: entity.name.clone(),
+                    ..Default::default()
+                })
+                .collect();
+            grpc(ListTenantsResponse {
+                total_count,
+                result,
+            })
         }
 
         "/api.ApplicationService/Create" => {
-            let mut entity = decode::<CreateApplicationRequest>(&body).application.unwrap();
+            let mut entity = decode::<CreateApplicationRequest>(&body)
+                .application
+                .unwrap();
             entity.id = format!("Application-{}", db.applications.len());
             let id = entity.id.clone();
             assert!(!db.applications.contains_key(&id), "duplicate create");
@@ -152,7 +175,9 @@ async fn mock_rpc(
             }
         }
         "/api.ApplicationService/Update" => {
-            let entity = decode::<UpdateApplicationRequest>(&body).application.unwrap();
+            let entity = decode::<UpdateApplicationRequest>(&body)
+                .application
+                .unwrap();
             assert!(db.applications.contains_key(&entity.id));
             db.applications.insert(entity.id.clone(), entity);
             db.updates += 1;
@@ -161,23 +186,34 @@ async fn mock_rpc(
 
         "/api.ApplicationService/List" => {
             let request = decode::<ListApplicationsRequest>(&body);
-            
+
             db.offsets.push(("Application".into(), request.offset));
-            let selected: Vec<_> = db.applications.values()
+            let selected: Vec<_> = db
+                .applications
+                .values()
                 .filter(|entity| entity.tenant_id == request.tenant_id)
                 .collect();
             let total_count = selected.len() as u32;
-            let result = selected.into_iter()
+            let result = selected
+                .into_iter()
                 .skip(request.offset as usize)
                 .take(request.limit as usize)
                 .map(|entity| ApplicationListItem {
-                    id: entity.id.clone(), name: entity.name.clone(), ..Default::default()
-                }).collect();
-            grpc(ListApplicationsResponse { total_count, result })
+                    id: entity.id.clone(),
+                    name: entity.name.clone(),
+                    ..Default::default()
+                })
+                .collect();
+            grpc(ListApplicationsResponse {
+                total_count,
+                result,
+            })
         }
 
         "/api.DeviceProfileService/Create" => {
-            let mut entity = decode::<CreateDeviceProfileRequest>(&body).device_profile.unwrap();
+            let mut entity = decode::<CreateDeviceProfileRequest>(&body)
+                .device_profile
+                .unwrap();
             entity.id = format!("DeviceProfile-{}", db.profiles.len());
             let id = entity.id.clone();
             assert!(!db.profiles.contains_key(&id), "duplicate create");
@@ -196,7 +232,9 @@ async fn mock_rpc(
             }
         }
         "/api.DeviceProfileService/Update" => {
-            let entity = decode::<UpdateDeviceProfileRequest>(&body).device_profile.unwrap();
+            let entity = decode::<UpdateDeviceProfileRequest>(&body)
+                .device_profile
+                .unwrap();
             assert!(db.profiles.contains_key(&entity.id));
             db.profiles.insert(entity.id.clone(), entity);
             db.updates += 1;
@@ -208,22 +246,31 @@ async fn mock_rpc(
             assert!(request.tenant_only);
             assert!(!request.global_only);
             db.offsets.push(("DeviceProfile".into(), request.offset));
-            let selected: Vec<_> = db.profiles.values()
+            let selected: Vec<_> = db
+                .profiles
+                .values()
                 .filter(|entity| entity.tenant_id == request.tenant_id)
                 .collect();
             let total_count = selected.len() as u32;
-            let result = selected.into_iter()
+            let result = selected
+                .into_iter()
                 .skip(request.offset as usize)
                 .take(request.limit as usize)
                 .map(|entity| DeviceProfileListItem {
-                    id: entity.id.clone(), name: entity.name.clone(), ..Default::default()
-                }).collect();
-            grpc(ListDeviceProfilesResponse { total_count, result })
+                    id: entity.id.clone(),
+                    name: entity.name.clone(),
+                    ..Default::default()
+                })
+                .collect();
+            grpc(ListDeviceProfilesResponse {
+                total_count,
+                result,
+            })
         }
 
         "/api.GatewayService/Create" => {
             let entity = decode::<CreateGatewayRequest>(&body).gateway.unwrap();
-            
+
             let id = entity.gateway_id.clone();
             assert!(!db.gateways.contains_key(&id), "duplicate create");
             db.gateways.insert(id.clone(), entity);
@@ -250,7 +297,7 @@ async fn mock_rpc(
 
         "/api.DeviceService/Create" => {
             let entity = decode::<CreateDeviceRequest>(&body).device.unwrap();
-            
+
             let id = entity.dev_eui.clone();
             assert!(!db.devices.contains_key(&id), "duplicate create");
             db.devices.insert(id.clone(), entity);
@@ -280,19 +327,24 @@ async fn mock_rpc(
             match db.keys.get(&request.dev_eui) {
                 Some(keys) => grpc(GetDeviceKeysResponse {
                     device_keys: Some(keys.clone()),
+                    ..Default::default()
                 }),
                 None => grpc_error(5),
             }
         }
         "/api.DeviceService/CreateKeys" => {
-            let keys = decode::<CreateDeviceKeysRequest>(&body).device_keys.unwrap();
+            let keys = decode::<CreateDeviceKeysRequest>(&body)
+                .device_keys
+                .unwrap();
             assert!(!db.keys.contains_key(&keys.dev_eui));
             db.keys.insert(keys.dev_eui.clone(), keys);
             db.creates += 1;
             grpc(())
         }
         "/api.DeviceService/UpdateKeys" => {
-            let keys = decode::<UpdateDeviceKeysRequest>(&body).device_keys.unwrap();
+            let keys = decode::<UpdateDeviceKeysRequest>(&body)
+                .device_keys
+                .unwrap();
             assert!(db.keys.contains_key(&keys.dev_eui));
             db.keys.insert(keys.dev_eui.clone(), keys);
             db.updates += 1;
@@ -319,7 +371,9 @@ async fn server() -> MockServer {
     let db = Arc::new(Mutex::new(Database::default()));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let app = Router::new().fallback(post(mock_rpc)).with_state(db.clone());
+    let app = Router::new()
+        .fallback(post(mock_rpc))
+        .with_state(db.clone());
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -337,7 +391,8 @@ async fn server() -> MockServer {
 }
 
 fn plan() -> Plan {
-    serde_yaml::from_str(r#"
+    serde_yaml::from_str(
+        r#"
 version: v1
 tenant:
   name: DATUM Lab
@@ -363,25 +418,36 @@ devices:
     join_eui: '0000000000000000'
     tags:
       source: simulator
-"#).unwrap()
+"#,
+    )
+    .unwrap()
 }
 
 #[tokio::test]
 async fn grpc_bootstrap_obtains_a_token_and_obeys_timeout() {
     let server = server().await;
     let token = ChirpStackClient::bootstrap_api_token(
-        &server.client.endpoint, "test-admin", "test-password", "test-provisioner",
+        &server.client.endpoint,
+        "test-admin",
+        "test-password",
+        "test-provisioner",
         Duration::from_secs(1),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(token, "test-token");
     server.db.lock().await.delay = Duration::from_secs(10);
     let result = tokio::time::timeout(
         Duration::from_secs(3),
         ChirpStackClient::bootstrap_api_token(
-            &server.client.endpoint, "test-admin", "test-password", "test-provisioner",
+            &server.client.endpoint,
+            "test-admin",
+            "test-password",
+            "test-provisioner",
             Duration::from_secs(1),
         ),
-    ).await;
+    )
+    .await;
     assert!(result.expect("bootstrap must obey timeout").is_err());
 }
 
@@ -390,7 +456,11 @@ async fn unsupported_region_prevents_all_remote_mutation() {
     let server = server().await;
     let mut plan = plan();
     plan.device_profiles[0].region = Some("invalid".into());
-    assert!(reconcile_plan(&server.client, &plan, &mut ProvisionState::default()).await.is_err());
+    assert!(
+        reconcile_plan(&server.client, &plan, &mut ProvisionState::default())
+            .await
+            .is_err()
+    );
     assert!(server.db.lock().await.calls.is_empty());
 }
 
@@ -400,7 +470,9 @@ async fn grpc_creates_and_updates_full_plan_without_duplicates() {
     let mut plan = plan();
     let mut state = ProvisionState::default();
     server.client.health().await.unwrap();
-    reconcile_plan(&server.client, &plan, &mut state).await.unwrap();
+    reconcile_plan(&server.client, &plan, &mut state)
+        .await
+        .unwrap();
     let first = serde_json::to_value(&state).unwrap();
     {
         let db = server.db.lock().await;
@@ -409,27 +481,43 @@ async fn grpc_creates_and_updates_full_plan_without_duplicates() {
         let profile = db.profiles.values().next().unwrap();
         assert_eq!(profile.region, parse_region("AU915").unwrap());
         assert_eq!(profile.region_config_id, "custom_au915");
-        assert_eq!(db.devices.values().next().unwrap().tags["source"], "simulator");
+        assert_eq!(
+            db.devices.values().next().unwrap().tags["source"],
+            "simulator"
+        );
     }
     plan.gateways[0].name = "Updated gateway".into();
     plan.devices[0].tags.insert("stage".into(), "fog".into());
     plan.device_profiles[0].description = "Updated profile".into();
-    reconcile_plan(&server.client, &plan, &mut state).await.unwrap();
+    reconcile_plan(&server.client, &plan, &mut state)
+        .await
+        .unwrap();
     {
         let db = server.db.lock().await;
         assert_eq!(db.creates, 5);
         assert_eq!(db.updates, 5);
         assert_eq!(db.gateways.values().next().unwrap().name, "Updated gateway");
         assert_eq!(db.devices.values().next().unwrap().tags["stage"], "fog");
-        assert_eq!(db.profiles.values().next().unwrap().description, "Updated profile");
+        assert_eq!(
+            db.profiles.values().next().unwrap().description,
+            "Updated profile"
+        );
     }
     let second = serde_json::to_value(&state).unwrap();
-    for key in ["tenant_id", "applications", "device_profiles", "gateways", "devices"] {
+    for key in [
+        "tenant_id",
+        "applications",
+        "device_profiles",
+        "gateways",
+        "devices",
+    ] {
         assert_eq!(first[key], second[key]);
     }
     // Re-discovery without local state must reuse names and EUIs too.
     let mut recovered = ProvisionState::default();
-    reconcile_plan(&server.client, &plan, &mut recovered).await.unwrap();
+    reconcile_plan(&server.client, &plan, &mut recovered)
+        .await
+        .unwrap();
     assert_eq!(server.db.lock().await.creates, 5);
     assert_eq!(recovered.tenant_id, state.tenant_id);
 }
@@ -451,7 +539,10 @@ async fn grpc_key_create_get_update_uses_official_messages() {
     let db = server.db.lock().await;
     assert_eq!(db.creates, 1);
     assert_eq!(db.updates, 1);
-    assert_eq!(db.keys["1122334455667788"].app_key, "00000000000000000000000000000003");
+    assert_eq!(
+        db.keys["1122334455667788"].app_key,
+        "00000000000000000000000000000003"
+    );
 }
 
 #[tokio::test]
@@ -464,33 +555,62 @@ async fn grpc_paginates_all_named_collections_and_reuses_last_page() {
         let mut db = server.db.lock().await;
         for n in 0..101 {
             let id = format!("{n:03}");
-            db.tenants.insert(id.clone(), Tenant {
-                id: id.clone(),
-                name: if n == 100 { "DATUM Lab".into() } else { id.clone() },
-                ..Default::default()
-            });
-            db.applications.insert(id.clone(), Application {
-                id: id.clone(), tenant_id: "100".into(),
-                name: if n == 100 { "Sensors".into() } else { id.clone() },
-                ..Default::default()
-            });
-            db.profiles.insert(id.clone(), DeviceProfile {
-                id: id.clone(), tenant_id: "100".into(),
-                name: if n == 100 { "Brazilian lab".into() } else { id.clone() },
-                ..Default::default()
-            });
+            db.tenants.insert(
+                id.clone(),
+                Tenant {
+                    id: id.clone(),
+                    name: if n == 100 {
+                        "DATUM Lab".into()
+                    } else {
+                        id.clone()
+                    },
+                    ..Default::default()
+                },
+            );
+            db.applications.insert(
+                id.clone(),
+                Application {
+                    id: id.clone(),
+                    tenant_id: "100".into(),
+                    name: if n == 100 {
+                        "Sensors".into()
+                    } else {
+                        id.clone()
+                    },
+                    ..Default::default()
+                },
+            );
+            db.profiles.insert(
+                id.clone(),
+                DeviceProfile {
+                    id: id.clone(),
+                    tenant_id: "100".into(),
+                    name: if n == 100 {
+                        "Brazilian lab".into()
+                    } else {
+                        id.clone()
+                    },
+                    ..Default::default()
+                },
+            );
         }
     }
     let mut state = ProvisionState::default();
-    reconcile_plan(&server.client, &plan, &mut state).await.unwrap();
+    reconcile_plan(&server.client, &plan, &mut state)
+        .await
+        .unwrap();
     assert_eq!(state.tenant_id.as_deref(), Some("100"));
     assert_eq!(state.applications["app"], "100");
     assert_eq!(state.device_profiles["radio"], "100");
     let db = server.db.lock().await;
     assert_eq!(db.creates, 0);
     for service in ["Tenant", "Application", "DeviceProfile"] {
-        let offsets: Vec<_> = db.offsets.iter()
-            .filter(|(name, _)| name == service).map(|(_, offset)| *offset).collect();
+        let offsets: Vec<_> = db
+            .offsets
+            .iter()
+            .filter(|(name, _)| name == service)
+            .map(|(_, offset)| *offset)
+            .collect();
         assert_eq!(offsets, vec![0, 100]);
     }
 }
@@ -504,8 +624,16 @@ async fn grpc_errors_do_not_trigger_create() {
             db.fail_code = Some(code);
             db.calls.clear();
         }
-        assert!(reconcile_plan(&server.client, &plan(), &mut ProvisionState::default()).await.is_err());
-        assert!(ensure_gateway(&server.client, &plan().gateways[0], "tenant", None).await.is_err());
+        assert!(
+            reconcile_plan(&server.client, &plan(), &mut ProvisionState::default())
+                .await
+                .is_err()
+        );
+        assert!(
+            ensure_gateway(&server.client, &plan().gateways[0], "tenant", None)
+                .await
+                .is_err()
+        );
         let db = server.db.lock().await;
         assert_eq!(db.creates, 0);
         assert!(!db.calls.iter().any(|path| path.ends_with("/Create")));
@@ -517,12 +645,17 @@ async fn grpc_timeout_bounds_health_and_reconciliation() {
     let server = server().await;
     server.db.lock().await.delay = Duration::from_secs(10);
     let result = tokio::time::timeout(Duration::from_secs(3), server.client.health()).await;
-    assert!(result.expect("health must obey the configured one-second timeout").is_err());
+    assert!(result
+        .expect("health must obey the configured one-second timeout")
+        .is_err());
     let result = tokio::time::timeout(
         Duration::from_secs(3),
         reconcile_plan(&server.client, &plan(), &mut ProvisionState::default()),
-    ).await;
-    assert!(result.expect("reconciliation must obey the configured timeout").is_err());
+    )
+    .await;
+    assert!(result
+        .expect("reconciliation must obey the configured timeout")
+        .is_err());
 }
 
 #[test]
