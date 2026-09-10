@@ -763,10 +763,17 @@ impl ChirpStackClient {
     }
 
     async fn put(&self, path: &str, body: Value) -> Result<Value> {
+        use chirpstack_api::api::{
+            application_service_client::ApplicationServiceClient,
+            device_profile_service_client::DeviceProfileServiceClient,
+            device_service_client::DeviceServiceClient,
+            tenant_service_client::TenantServiceClient,
+        };
+
         if path.starts_with("/api/tenants/") {
             let id = path.trim_start_matches("/api/tenants/");
             let tenant = &body["tenant"];
-            chirpstack_api::api::tenant_service_client::TenantServiceClient::new(self.channel().await?)
+            TenantServiceClient::new(self.channel().await?)
                 .update(self.auth(chirpstack_api::api::UpdateTenantRequest {
                     tenant: Some(chirpstack_api::api::Tenant {
                         id: id.into(),
@@ -781,6 +788,87 @@ impl ChirpStackClient {
                 .await?;
             return Ok(json!({}));
         }
+
+        if path.starts_with("/api/applications/") {
+            let id = path.trim_start_matches("/api/applications/");
+            let application = &body["application"];
+            ApplicationServiceClient::new(self.channel().await?)
+                .update(self.auth(chirpstack_api::api::UpdateApplicationRequest {
+                    application: Some(chirpstack_api::api::Application {
+                        id: id.into(),
+                        name: application["name"].as_str().unwrap_or_default().into(),
+                        description: application["description"].as_str().unwrap_or_default().into(),
+                        tenant_id: application["tenant_id"].as_str().unwrap_or_default().into(),
+                        ..Default::default()
+                    }),
+                })?)
+                .await?;
+            return Ok(json!({}));
+        }
+
+        if path.starts_with("/api/device-profiles/") {
+            let id = path.trim_start_matches("/api/device-profiles/");
+            let profile = &body["device_profile"];
+            DeviceProfileServiceClient::new(self.channel().await?)
+                .update(self.auth(chirpstack_api::api::UpdateDeviceProfileRequest {
+                    device_profile: Some(chirpstack_api::api::DeviceProfile {
+                        id: id.into(),
+                        tenant_id: profile["tenant_id"].as_str().unwrap_or_default().into(),
+                        name: profile["name"].as_str().unwrap_or_default().into(),
+                        description: profile["description"].as_str().unwrap_or_default().into(),
+                        region: chirpstack_api::common::Region::Eu868.into(),
+                        mac_version: chirpstack_api::common::MacVersion::Lorawan103.into(),
+                        reg_params_revision: chirpstack_api::common::RegParamsRevision::A.into(),
+                        adr_algorithm_id: "default".into(),
+                        supports_otaa: profile["supports_otaa"].as_bool().unwrap_or(true),
+                        supports_class_b: profile["supports_class_b"].as_bool().unwrap_or(false),
+                        supports_class_c: profile["supports_class_c"].as_bool().unwrap_or(false),
+                        uplink_interval: profile["uplink_interval"].as_u64().unwrap_or(60) as u32,
+                        device_status_req_interval: profile["device_status_req_interval"].as_u64().unwrap_or(86400) as u32,
+                        ..Default::default()
+                    }),
+                })?)
+                .await?;
+            return Ok(json!({}));
+        }
+
+        if path.starts_with("/api/devices/") {
+            let suffix = path.trim_start_matches("/api/devices/");
+            let mut client = DeviceServiceClient::new(self.channel().await?);
+            if suffix.ends_with("/keys") {
+                let keys = &body["device_keys"];
+                client
+                    .update_keys(self.auth(chirpstack_api::api::UpdateDeviceKeysRequest {
+                        device_keys: Some(chirpstack_api::api::DeviceKeys {
+                            dev_eui: keys["dev_eui"].as_str().unwrap_or_default().into(),
+                            nwk_key: keys["nwk_key"].as_str().unwrap_or_default().into(),
+                            app_key: keys["app_key"].as_str().unwrap_or_default().into(),
+                            ..Default::default()
+                        }),
+                    })?)
+                    .await?;
+            } else {
+                let device = &body["device"];
+                client
+                    .update(self.auth(chirpstack_api::api::UpdateDeviceRequest {
+                        device: Some(chirpstack_api::api::Device {
+                            dev_eui: suffix.into(),
+                            name: device["name"].as_str().unwrap_or_default().into(),
+                            description: device["description"].as_str().unwrap_or_default().into(),
+                            application_id: device["application_id"].as_str().unwrap_or_default().into(),
+                            device_profile_id: device["device_profile_id"].as_str().unwrap_or_default().into(),
+                            join_eui: device["join_eui"].as_str().unwrap_or_default().into(),
+                            skip_fcnt_check: false,
+                            is_disabled: false,
+                            tags: BTreeMap::new(),
+                            variables: BTreeMap::new(),
+                        }),
+                    })?)
+                    .await?;
+            }
+            return Ok(json!({}));
+        }
+
         Err(anyhow!("unsupported ChirpStack gRPC PUT path: {path}"))
     }
 }
