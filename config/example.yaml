@@ -8,5 +8,6 @@ chirpstack:
 
 # This file must live on a writable persistent volume when the dynamic API is used.
 plan_path: /var/lib/chirpstack-provisioner/desired.yaml
+bootstrap_plan_path: /etc/chirpstack-provisioner/desired.yaml
 state_path: /var/lib/chirpstack-provisioner/state.json
 
