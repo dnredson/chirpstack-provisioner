@@ -1,0 +1,12 @@
+server:
+  bind: 0.0.0.0:8085
+
+chirpstack:
+  endpoint: http://chirpstack:8080
+  api_token_env: CHIRPSTACK_API_TOKEN
+  timeout_seconds: 15
+
+# This file must live on a writable persistent volume when the dynamic API is used.
+plan_path: /var/lib/chirpstack-provisioner/desired.yaml
+state_path: /var/lib/chirpstack-provisioner/state.json
+

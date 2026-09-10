@@ -1,0 +1,6 @@
+/target/
+*.env
+*.secret
+state.json
+desired.yaml
+

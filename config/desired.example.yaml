@@ -1,0 +1,41 @@
+version: v1
+
+tenant:
+  name: DATUM Lab
+  description: Initial DATUM LoRaWAN tenant
+  can_have_gateways: true
+
+device_profiles:
+  - key: eu868-otaa-class-a
+    name: EU868 OTAA Class A
+    description: DATUM simulated sensor profile
+    region_config_id: eu868
+    supports_otaa: true
+    supports_class_b: false
+    supports_class_c: false
+    uplink_interval: 60
+    device_status_req_interval: 86400
+
+applications:
+  - key: datum-lab
+    name: DATUM Lab
+    description: Simulated LoRaWAN sensors
+
+gateways:
+  - gateway_id: 0102030405060708
+    name: mist-01
+    description: DATUM mist Gateway Bridge
+    stats_interval: 30
+
+devices:
+  - dev_eui: 0102030405060708
+    name: sensor-001
+    application: datum-lab
+    device_profile: eu868-otaa-class-a
+    description: Initial simulated sensor
+    join_eui: 0102030405060708
+    app_key_env: DATUM_SENSOR_001_APP_KEY
+    tags:
+      source: simulator
+      stage: e2e
+
