@@ -19,6 +19,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tonic = { version = "0.12", features = ["transport"] }
 prost = "0.13"
+chirpstack_api = { git = "https://github.com/chirpstack/chirpstack", tag = "v4.19.1", package = "chirpstack_api", default-features = false, features = ["api", "internal"] }
 
 [build-dependencies]
 tonic-build = "0.12"
