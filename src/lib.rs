@@ -10,7 +10,6 @@ use anyhow::{anyhow, Context, Result};
 use axum::{
     extract::State,
     http::StatusCode,
-    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
@@ -579,7 +578,7 @@ impl ChirpStackClient {
                 self.channel().await?,
             );
         client
-            .get_version(self.auth(prost_types::Empty {})?)
+            .get_version(self.auth(())?)
             .await
             .map(|_| ())
             .context("ChirpStack gRPC health check")
@@ -633,9 +632,6 @@ impl ChirpStackClient {
                         offset: 0,
                         search: String::new(),
                         tenant_id: tenant_id.into(),
-                        device_id: String::new(),
-                        global_only: false,
-                        tenant_only: false,
                     })?)
                     .await?
                     .into_inner();
@@ -662,6 +658,9 @@ impl ChirpStackClient {
                         offset: 0,
                         search: String::new(),
                         tenant_id: tenant_id.into(),
+                        device_id: String::new(),
+                        global_only: false,
+                        tenant_only: false,
                     })?)
                     .await?
                     .into_inner();
@@ -775,7 +774,7 @@ impl ChirpStackClient {
 
         if path == "/api/devices" {
             let device = &body["device"];
-            let response = DeviceServiceClient::new(self.channel().await?)
+            DeviceServiceClient::new(self.channel().await?)
                 .create(self.auth(chirpstack_api::api::CreateDeviceRequest {
                     device: Some(chirpstack_api::api::Device {
                         dev_eui: device["dev_eui"].as_str().unwrap_or_default().into(),
