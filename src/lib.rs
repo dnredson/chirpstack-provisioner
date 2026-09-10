@@ -408,7 +408,12 @@ fn validate_plan(plan: &Plan) -> Result<()> {
         return Err(anyhow!("plan requires a tenant"));
     }
     for profile in &plan.device_profiles {
-        parse_region(profile.region.as_deref().unwrap_or(&profile.region_config_id))?;
+        parse_region(
+            profile
+                .region
+                .as_deref()
+                .unwrap_or(&profile.region_config_id),
+        )?;
     }
 
     let applications: std::collections::BTreeSet<_> = plan
@@ -686,7 +691,9 @@ fn string_map(value: &Value, field: &str) -> HashMap<String, String> {
 
 fn append_page(result: &mut Vec<Value>, page: Vec<Value>, total: u32) -> Result<bool> {
     if page.is_empty() && result.len() < total as usize {
-        return Err(anyhow!("ChirpStack returned an empty page before total_count"));
+        return Err(anyhow!(
+            "ChirpStack returned an empty page before total_count"
+        ));
     }
     result.extend(page);
     Ok(result.len() >= total as usize)
@@ -696,7 +703,10 @@ fn parse_region(value: &str) -> Result<i32> {
     let normalized = value.to_ascii_uppercase().replace('-', "_");
     let name = match normalized.rsplit_once('_') {
         Some((band @ ("US915" | "AU915"), subband))
-            if subband.len() == 1 && matches!(subband.as_bytes()[0], b'0'..=b'7') => band,
+            if subband.len() == 1 && matches!(subband.as_bytes()[0], b'0'..=b'7') =>
+        {
+            band
+        }
         _ => &normalized,
     };
     chirpstack_api::common::Region::from_str_name(name)
@@ -766,9 +776,9 @@ impl ChirpStackClient {
             internal_bootstrap::internal_service_client::InternalServiceClient::new(channel);
 
         let mut login_request = tonic::Request::new(internal_bootstrap::LoginRequest {
-                email: email.to_string(),
-                password: password.to_string(),
-            });
+            email: email.to_string(),
+            password: password.to_string(),
+        });
         login_request.set_timeout(timeout);
         let login = client
             .login(login_request)
@@ -821,8 +831,13 @@ impl ChirpStackClient {
     async fn exists(&self, path: &str) -> Result<bool> {
         match self.get(path).await {
             Ok(_) => Ok(true),
-            Err(error) if error.downcast_ref::<tonic::Status>()
-                .is_some_and(|status| status.code() == tonic::Code::NotFound) => Ok(false),
+            Err(error)
+                if error
+                    .downcast_ref::<tonic::Status>()
+                    .is_some_and(|status| status.code() == tonic::Code::NotFound) =>
+            {
+                Ok(false)
+            }
             Err(error) => Err(error),
         }
     }
@@ -840,10 +855,17 @@ impl ChirpStackClient {
         }
 
         if let Some(gateway_id) = path.strip_prefix("/api/gateways/") {
-            let response = chirpstack_api::api::gateway_service_client::GatewayServiceClient::new(self.channel().await?)
-                .get(self.auth(chirpstack_api::api::GetGatewayRequest { gateway_id: gateway_id.into() })?)
-                .await?.into_inner();
-            let gateway = response.gateway.ok_or_else(|| anyhow!("ChirpStack returned no gateway"))?;
+            let response = chirpstack_api::api::gateway_service_client::GatewayServiceClient::new(
+                self.channel().await?,
+            )
+            .get(self.auth(chirpstack_api::api::GetGatewayRequest {
+                gateway_id: gateway_id.into(),
+            })?)
+            .await?
+            .into_inner();
+            let gateway = response
+                .gateway
+                .ok_or_else(|| anyhow!("ChirpStack returned no gateway"))?;
             return Ok(json!({"gateway": {"gateway_id": gateway.gateway_id}}));
         }
 
@@ -853,7 +875,8 @@ impl ChirpStackClient {
             if request_path.is_empty() || request_path.starts_with('?') {
                 let mut result = Vec::new();
                 loop {
-                    let offset = u32::try_from(result.len()).context("pagination offset overflow")?;
+                    let offset =
+                        u32::try_from(result.len()).context("pagination offset overflow")?;
                     let response = client
                         .list(self.auth(chirpstack_api::api::ListTenantsRequest {
                             limit: 100,
@@ -863,7 +886,9 @@ impl ChirpStackClient {
                         })?)
                         .await?
                         .into_inner();
-                    let page = response.result.into_iter()
+                    let page = response
+                        .result
+                        .into_iter()
                         .map(|item| json!({"id": item.id, "name": item.name}))
                         .collect();
                     if append_page(&mut result, page, response.total_count)? {
@@ -888,7 +913,8 @@ impl ChirpStackClient {
                 let tenant_id = path.split("tenant_id=").nth(1).unwrap_or_default();
                 let mut result = Vec::new();
                 loop {
-                    let offset = u32::try_from(result.len()).context("pagination offset overflow")?;
+                    let offset =
+                        u32::try_from(result.len()).context("pagination offset overflow")?;
                     let response = client
                         .list(self.auth(chirpstack_api::api::ListApplicationsRequest {
                             limit: 100,
@@ -898,7 +924,9 @@ impl ChirpStackClient {
                         })?)
                         .await?
                         .into_inner();
-                    let page = response.result.into_iter()
+                    let page = response
+                        .result
+                        .into_iter()
                         .map(|item| json!({"id": item.id, "name": item.name}))
                         .collect();
                     if append_page(&mut result, page, response.total_count)? {
@@ -923,20 +951,23 @@ impl ChirpStackClient {
                 let tenant_id = path.split("tenant_id=").nth(1).unwrap_or_default();
                 let mut result = Vec::new();
                 loop {
-                    let offset = u32::try_from(result.len()).context("pagination offset overflow")?;
+                    let offset =
+                        u32::try_from(result.len()).context("pagination offset overflow")?;
                     let response = client
                         .list(self.auth(chirpstack_api::api::ListDeviceProfilesRequest {
                             limit: 100,
                             offset,
                             search: String::new(),
                             tenant_id: tenant_id.into(),
-                        device_id: String::new(),
-                        global_only: false,
-                        tenant_only: true,
+                            device_id: String::new(),
+                            global_only: false,
+                            tenant_only: true,
                         })?)
                         .await?
                         .into_inner();
-                    let page = response.result.into_iter()
+                    let page = response
+                        .result
+                        .into_iter()
                         .map(|item| json!({"id": item.id, "name": item.name}))
                         .collect();
                     if append_page(&mut result, page, response.total_count)? {
@@ -984,10 +1015,13 @@ impl ChirpStackClient {
 
     async fn post(&self, path: &str, body: Value) -> Result<Value> {
         if path == "/api/gateways" {
-            chirpstack_api::api::gateway_service_client::GatewayServiceClient::new(self.channel().await?)
-                .create(self.auth(chirpstack_api::api::CreateGatewayRequest {
-                    gateway: Some(gateway_from_body(&body)),
-                })?).await?;
+            chirpstack_api::api::gateway_service_client::GatewayServiceClient::new(
+                self.channel().await?,
+            )
+            .create(self.auth(chirpstack_api::api::CreateGatewayRequest {
+                gateway: Some(gateway_from_body(&body)),
+            })?)
+            .await?;
             return Ok(json!({}));
         }
         use chirpstack_api::api::{
@@ -1048,7 +1082,10 @@ impl ChirpStackClient {
                             name: profile["name"].as_str().unwrap_or_default().into(),
                             description: profile["description"].as_str().unwrap_or_default().into(),
                             region: parse_region(profile["region"].as_str().unwrap_or_default())?,
-                            region_config_id: profile["region_config_id"].as_str().unwrap_or_default().into(),
+                            region_config_id: profile["region_config_id"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .into(),
                             mac_version: chirpstack_api::common::MacVersion::Lorawan103.into(),
                             reg_params_revision: chirpstack_api::common::RegParamsRevision::A
                                 .into(),
@@ -1126,10 +1163,13 @@ impl ChirpStackClient {
         if let Some(gateway_id) = path.strip_prefix("/api/gateways/") {
             let mut gateway = gateway_from_body(&body);
             gateway.gateway_id = gateway_id.into();
-            chirpstack_api::api::gateway_service_client::GatewayServiceClient::new(self.channel().await?)
-                .update(self.auth(chirpstack_api::api::UpdateGatewayRequest {
-                    gateway: Some(gateway),
-                })?).await?;
+            chirpstack_api::api::gateway_service_client::GatewayServiceClient::new(
+                self.channel().await?,
+            )
+            .update(self.auth(chirpstack_api::api::UpdateGatewayRequest {
+                gateway: Some(gateway),
+            })?)
+            .await?;
             return Ok(json!({}));
         }
         use chirpstack_api::api::{
@@ -1191,7 +1231,10 @@ impl ChirpStackClient {
                             name: profile["name"].as_str().unwrap_or_default().into(),
                             description: profile["description"].as_str().unwrap_or_default().into(),
                             region: parse_region(profile["region"].as_str().unwrap_or_default())?,
-                            region_config_id: profile["region_config_id"].as_str().unwrap_or_default().into(),
+                            region_config_id: profile["region_config_id"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .into(),
                             mac_version: chirpstack_api::common::MacVersion::Lorawan103.into(),
                             reg_params_revision: chirpstack_api::common::RegParamsRevision::A
                                 .into(),
