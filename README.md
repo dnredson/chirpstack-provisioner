@@ -40,8 +40,10 @@ chirpstack-provisioner
 ```
 
 Start from [`config/example.yaml`](config/example.yaml) and
-[`config/desired.example.yaml`](config/desired.example.yaml). Secrets are
-referenced by environment-variable name and are never stored in the plan.
+[`config/desired.example.yaml`](config/desired.example.yaml). Secrets are referenced by environment-variable name and are never stored in the plan. The
+container image is published by GitHub Actions as `ghcr.io/dnredson/chirpstack-provisioner:main`.
+The `CHIRPSTACK_API_TOKEN` must be a valid ChirpStack API token; it is not the same as
+ChirpStack's server-side API secret.
 The desired-state file and `state.json` must be on a writable persistent
 volume when dynamic registration is enabled.
 
