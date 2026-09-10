@@ -910,8 +910,8 @@ impl ChirpStackClient {
                             join_eui: device["join_eui"].as_str().unwrap_or_default().into(),
                             skip_fcnt_check: false,
                             is_disabled: false,
-                            tags: BTreeMap::new(),
-                            variables: BTreeMap::new(),
+                            tags: string_map(device, "tags"),
+                            variables: HashMap::new(),
                         }),
                     })?)
                     .await?;
