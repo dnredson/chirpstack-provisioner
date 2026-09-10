@@ -25,6 +25,8 @@ pub struct Config {
     pub server: ServerConfig,
     pub chirpstack: ChirpStackConfig,
     pub plan_path: PathBuf,
+    #[serde(default)]
+    pub bootstrap_plan_path: Option<PathBuf>,
     pub state_path: PathBuf,
 }
 
@@ -186,7 +188,15 @@ pub struct AppState {
 
 impl AppState {
     pub async fn load(config: Config) -> Result<Self> {
-        let plan = read_yaml(&config.plan_path)?;
+        let plan = if config.plan_path.exists() {
+            read_yaml(&config.plan_path)?
+        } else if let Some(bootstrap_path) = &config.bootstrap_plan_path {
+            let plan = read_yaml(bootstrap_path)?;
+            atomic_write_yaml(&config.plan_path, &plan)?;
+            plan
+        } else {
+            return Err(anyhow!("plan file does not exist: {}", config.plan_path.display()));
+        };
         let state = if config.state_path.exists() {
             read_json(&config.state_path)?
         } else {
