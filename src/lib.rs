@@ -532,7 +532,7 @@ impl ChirpStackClient {
                 self.channel().await?,
             );
         client
-            .get_version(self.auth(chirpstack_api::api::GetVersionRequest {})?)
+            .get_version(self.auth(prost_types::Empty {})?)
             .await
             .map(|_| ())
             .context("ChirpStack gRPC health check")
